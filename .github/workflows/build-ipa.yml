@@ -1,0 +1,69 @@
+name: Build Apple TV app (unsigned IPA)
+
+# Builds tvOS Browser for Chad's Apple TV 4K (tvOS 26) so it can show the party screen (http://party.lan/tv).
+# Nothing is signed here: the atvloadly add-on on Home Assistant signs it with Chad's own Apple ID when it installs it.
+# Uses only GitHub's own actions and the Xcode that comes on GitHub's Mac runners.
+
+on:
+  push:
+    branches: [master]
+    paths: [.github/workflows/build-ipa.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Use Xcode 26 (tvOS 26 SDK - the Apple TV is on tvOS 26.6)
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort | tail -n 1 || true)
+          if [ -z "$X" ]; then echo "No Xcode 26 on this runner"; exit 1; fi
+          sudo xcode-select -s "$X/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk appletvos --show-sdk-version
+
+      - name: Build for the Apple TV (no signing)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project _Project/Browser.xcodeproj \
+            -target Browser \
+            -configuration Release \
+            -sdk appletvos \
+            SYMROOT="$RUNNER_TEMP/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            VALIDATE_PRODUCT=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Package the IPA
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/build/Release-appletvos/Browser.app"
+          test -d "$APP"
+          mkdir -p pkg/Payload
+          ditto "$APP" pkg/Payload/Browser.app
+          (cd pkg && zip -qry "$GITHUB_WORKSPACE/tvOSBrowser.ipa" Payload)
+          ls -l tvOSBrowser.ipa
+          shasum -a 256 tvOSBrowser.ipa
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist" || true
+
+      - name: Keep the IPA (downloadable from this run for 30 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvOSBrowser-ipa
+          path: tvOSBrowser.ipa
+          if-no-files-found: error
+          retention-days: 30
